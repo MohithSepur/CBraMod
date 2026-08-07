@@ -13,7 +13,7 @@ def butter_bandpass(low_cut, high_cut, fs, order=5):
     b, a = butter(order, [low, high], btype='band')
     return b, a
 
-root_dir = '/data/datasets/BCICIV2a/data_mat'
+root_dir = '/data/wjq/datasets/BigDownstream/BCICIV2a/data_mat'
 files = [file for file in os.listdir(root_dir)]
 files = sorted(files)
 
@@ -51,20 +51,28 @@ dataset = {
 # print(files_dict)
 
 
-db = lmdb.open('/data/datasets/BCICIV2a/processed_inde_avg_filter', map_size=1610612736)
+db = lmdb.open('/data/wjq/datasets/BigDownstream/BCICIV2a/processed_inde_avg_03_50', map_size=1610612736)
 for files_key in files_dict.keys():
     for file in files_dict[files_key]:
         print(file)
         data = scipy.io.loadmat(os.path.join(root_dir, file))
         num = len(data['data'][0])
-        # print(num)
-        # print(data['data'][0, 8][0, 0][0].shape)
-        # print(data['data'][0, 8][0, 0][1].shape)
-        # print(data['data'][0, 8][0, 0][2].shape)
-        for j in range(3, num):
+        # Dynamically detect EOG calibration structs and skip them.
+        # Standard sessions (e.g. A01T) contain 3 EOG structs followed by 6 MI runs.
+        # A04T is a known exception: due to a recording issue it has only 1 EOG struct
+        # followed by 6 MI runs (7 structs total). A hard-coded `range(3, num)` would
+        # wrongly skip 2 real MI runs of A04T, losing 96 = 2*48 trials. EOG calibration
+        # structs carry no trial labels, so we detect them by an empty label array
+        # instead of assuming a fixed prefix length.
+        n_eog, n_mi = 0, 0
+        for j in range(num):
+            labels = data['data'][0, j][0, 0][2][:, 0]
+            if labels.shape[0] == 0:  # EOG calibration block (no trial labels) -> skip
+                n_eog += 1
+                continue
+            n_mi += 1
             raw_data = data['data'][0, j][0, 0][0][:, :22]
             events = data['data'][0, j][0, 0][1][:, 0]
-            labels = data['data'][0, j][0, 0][2][:, 0]
             length = raw_data.shape[0]
             events = events.tolist()
             events.append(length)
@@ -94,6 +102,8 @@ for files_key in files_dict.keys():
                 txn.put(key=sample_key.encode(), value=pickle.dumps(data_dict))
                 txn.commit()
                 dataset[files_key].append(sample_key)
+            print(f'  -> {file}: skipped {n_eog} EOG struct(s), processed {n_mi} MI run(s) -> '
+                  f'{sum(1 for k in dataset[files_key] if k.startswith(file[:-4]))} trials')
 
 
 txn = db.begin(write=True)
