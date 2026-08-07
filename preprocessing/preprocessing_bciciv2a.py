@@ -51,7 +51,7 @@ dataset = {
 # print(files_dict)
 
 
-db = lmdb.open('/data/wjq/datasets/BigDownstream/BCICIV2a/processed_inde_avg_03_50', map_size=1610612736)
+db = lmdb.open('/data/wjq/datasets/BigDownstream/BCICIV2a/processed_inde_avg_filter', map_size=1610612736)
 for files_key in files_dict.keys():
     for file in files_dict[files_key]:
         print(file)
