@@ -65,6 +65,38 @@ You can finetune CBraMod on our selected downstream datasets using the following
 python finetune_main.py
 ```
 
+### EvoBrain-compatible seizure detection
+
+The `TUSZ` and `CHB-MIT` fine-tuning paths use the six-field EvoBrain batch
+contract `(x, y, seq_len, supports, adj_mat, writeout_fn)`. CBraMod consumes
+raw one-second patches, so these paths enforce `--no-use_fft`; 100-bin FFT
+features are rejected rather than transformed back into phase-less pseudo-raw
+signals.
+
+TUSZ reads continuous EDF recordings and creates non-overlapping 10-second
+windows. Raw-domain, training-derived scaler files must be supplied explicitly
+when standardization is enabled; do not pass EvoBrain's FFT-domain scaler to
+this raw-only path. The repository does not invent replacement statistics.
+CHB-MIT reads already-segmented PKLs and does not run a splitter.
+
+```commandline
+python finetune_main.py --downstream_dataset TUSZ \
+  --raw_data_dir /path/to/TUSZ \
+  --scaler_mean_path /path/to/mean.pkl \
+  --scaler_std_path /path/to/std.pkl \
+  --no-use_fft
+
+python finetune_main.py --downstream_dataset CHB-MIT \
+  --datasets_dir /path/to/chb-pkl-splits \
+  --no-use_fft
+```
+
+Development plumbing can be checked without a dataset using:
+
+```commandline
+python -m unittest tests.test_evobrain_seizure_contract
+```
+
 
 ## 🚀 Quick Start
 You can fine-tune the pretrained CBraMod on your custom downstream dataset using the following example code:

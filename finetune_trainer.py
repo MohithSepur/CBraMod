@@ -8,6 +8,7 @@ from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss, MSELoss
 from tqdm import tqdm
 
 from finetune_evaluator import Evaluator
+from seizure_detection import evaluate_and_save, train_one_batch, training_criterion
 
 
 class Trainer(object):
@@ -18,13 +19,16 @@ class Trainer(object):
         self.val_eval = Evaluator(params, self.data_loader['val'])
         self.test_eval = Evaluator(params, self.data_loader['test'])
 
-        self.model = model.cuda()
+        self.device = torch.device(
+            f"cuda:{self.params.cuda}" if torch.cuda.is_available() else "cpu"
+        )
+        self.model = model.to(self.device)
         if self.params.downstream_dataset in ['FACED', 'SEED-V', 'PhysioNet-MI', 'ISRUC', 'BCIC2020-3', 'TUEV', 'BCIC-IV-2a']:
-            self.criterion = CrossEntropyLoss(label_smoothing=self.params.label_smoothing).cuda()
-        elif self.params.downstream_dataset in ['SHU-MI', 'CHB-MIT', 'Mumtaz2016', 'MentalArithmetic', 'TUAB']:
-            self.criterion = BCEWithLogitsLoss().cuda()
+            self.criterion = CrossEntropyLoss(label_smoothing=self.params.label_smoothing).to(self.device)
+        elif self.params.downstream_dataset in ['SHU-MI', 'CHB-MIT', 'TUSZ', 'Mumtaz2016', 'MentalArithmetic', 'TUAB']:
+            self.criterion = BCEWithLogitsLoss().to(self.device)
         elif self.params.downstream_dataset == 'SEED-VIG':
-            self.criterion = MSELoss().cuda()
+            self.criterion = MSELoss().to(self.device)
 
         self.best_model_states = None
 
@@ -65,6 +69,77 @@ class Trainer(object):
             self.optimizer, T_max=self.params.epochs * self.data_length, eta_min=1e-6
         )
         print(self.model)
+
+    def train_for_seizure_detection(self):
+        """Train/evaluate a six-field TUSZ or CHB-MIT-PKL seizure loader."""
+        criterion = training_criterion(self.data_loader['train'].dataset, self.device)
+        use_amp = bool(getattr(self.params, 'amp', False) and self.device.type == 'cuda')
+        scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+        best_f1 = float('-inf')
+        best_state = None
+
+        for epoch in range(self.params.epochs):
+            self.model.train()
+            losses = []
+            for batch in tqdm(self.data_loader['train'], mininterval=10):
+                loss, stepped, _ = train_one_batch(
+                    model=self.model,
+                    batch=batch,
+                    optimizer=self.optimizer,
+                    criterion=criterion,
+                    device=self.device,
+                    max_grad_norm=self.params.max_grad_norm,
+                    scaler=scaler,
+                    use_amp=use_amp,
+                )
+                if loss is not None:
+                    losses.append(loss)
+                if stepped:
+                    self.optimizer_scheduler.step()
+
+            dev_metrics = evaluate_and_save(
+                self.model,
+                self.data_loader['val'],
+                self.device,
+                self.params.model_dir,
+                split='dev',
+            )
+            print(
+                "Epoch {}: train_loss={:.5f}, dev_f1={:.5f}, dev_auroc={:.5f}, threshold={:.5f}".format(
+                    epoch + 1,
+                    float(np.mean(losses)) if losses else float('nan'),
+                    dev_metrics['f1'],
+                    dev_metrics['auroc'],
+                    dev_metrics['threshold'],
+                )
+            )
+            if dev_metrics['f1'] > best_f1:
+                best_f1 = dev_metrics['f1']
+                best_state = copy.deepcopy(self.model.state_dict())
+
+        if best_state is None:
+            raise RuntimeError("No finite CBraMod seizure-training epoch completed")
+        self.model.load_state_dict(best_state)
+        dev_metrics = evaluate_and_save(
+            self.model,
+            self.data_loader['val'],
+            self.device,
+            self.params.model_dir,
+            split='dev',
+        )
+        test_metrics = evaluate_and_save(
+            self.model,
+            self.data_loader['test'],
+            self.device,
+            self.params.model_dir,
+            split='test',
+            threshold=dev_metrics['threshold'],
+        )
+        os.makedirs(self.params.model_dir, exist_ok=True)
+        torch.save(self.model.state_dict(), os.path.join(self.params.model_dir, 'best_seizure_model.pth'))
+        print("Dev metrics:", dev_metrics)
+        print("Test metrics:", test_metrics)
+        return dev_metrics, test_metrics
 
     def train_for_multiclass(self):
         f1_best = 0

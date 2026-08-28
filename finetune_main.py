@@ -4,7 +4,7 @@ import random
 import numpy as np
 import torch
 
-from datasets import faced_dataset, seedv_dataset, physio_dataset, shu_dataset, isruc_dataset, chb_dataset, \
+from datasets import faced_dataset, seedv_dataset, physio_dataset, shu_dataset, isruc_dataset, chb_dataset, tusz_dataset, \
     speech_dataset, mumtaz_dataset, seedvig_dataset, stress_dataset, tuev_dataset, tuab_dataset, bciciv2a_dataset
 from finetune_trainer import Trainer
 from models import model_for_faced, model_for_seedv, model_for_physio, model_for_shu, model_for_isruc, model_for_chb, \
@@ -22,6 +22,9 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=5e-2, help='weight decay (default: 1e-2)')
     parser.add_argument('--optimizer', type=str, default='AdamW', help='optimizer (AdamW, SGD)')
     parser.add_argument('--clip_value', type=float, default=1, help='clip_value')
+    parser.add_argument('--max_grad_norm', type=float, default=5.0,
+                        help='seizure gradient norm (EvoBrain args.py:204-207)')
+    parser.add_argument('--amp', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
     parser.add_argument('--classifier', type=str, default='all_patch_reps',
                         help='[all_patch_reps, all_patch_reps_twolayer, '
@@ -33,13 +36,24 @@ def main():
 
     """############ Downstream dataset settings ############"""
     parser.add_argument('--downstream_dataset', type=str, default='MentalArithmetic',
-                        help='[FACED, SEED-V, PhysioNet-MI, SHU-MI, ISRUC, CHB-MIT, BCIC2020-3, Mumtaz2016, '
+                        help='[FACED, SEED-V, PhysioNet-MI, SHU-MI, ISRUC, CHB-MIT, TUSZ, BCIC2020-3, Mumtaz2016, '
                              'SEED-VIG, MentalArithmetic, TUEV, TUAB, BCIC-IV-2a]')
     parser.add_argument('--datasets_dir', type=str,
-                        default='/data/datasets/BigDownstream/mental-arithmetic/processed',
+                        default=None,
                         help='datasets_dir')
+    parser.add_argument('--raw_data_dir', type=str, default=None,
+                        help='continuous raw TUSZ root; not used for CHB-MIT PKLs')
+    parser.add_argument('--max_seq_len', type=int, default=10)
+    parser.add_argument('--time_step_size', type=int, default=1)
+    parser.add_argument('--use_fft', action=argparse.BooleanOptionalAction, default=False,
+                        help='must remain false for CBraMod seizure detection')
+    parser.add_argument('--standardize', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--scaler_mean_path', type=str, default=None)
+    parser.add_argument('--scaler_std_path', type=str, default=None)
+    parser.add_argument('--data_augment', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--top_k', type=int, default=3)
     parser.add_argument('--num_of_classes', type=int, default=2, help='number of classes')
-    parser.add_argument('--model_dir', type=str, default='/data/wjq/models_weights/Big/BigFaced', help='model_dir')
+    parser.add_argument('--model_dir', type=str, default='./results', help='model_dir')
     """############ Downstream dataset settings ############"""
 
     parser.add_argument('--num_workers', type=int, default=16, help='num_workers')
@@ -48,7 +62,7 @@ def main():
                         help='multi_lr')  # set different learning rates for different modules
     parser.add_argument('--frozen', type=bool,
                         default=False, help='frozen')
-    parser.add_argument('--use_pretrained_weights', type=bool,
+    parser.add_argument('--use_pretrained_weights', action=argparse.BooleanOptionalAction,
                         default=True, help='use_pretrained_weights')
     parser.add_argument('--foundation_dir', type=str,
                         default='pretrained_weights/pretrained_weights.pth',
@@ -58,7 +72,8 @@ def main():
     print(params)
 
     setup_seed(params.seed)
-    torch.cuda.set_device(params.cuda)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(params.cuda)
     print('The downstream dataset is {}'.format(params.downstream_dataset))
     if params.downstream_dataset == 'FACED':
         load_dataset = faced_dataset.LoadDataset(params)
@@ -91,11 +106,27 @@ def main():
         t = Trainer(params, data_loader, model)
         t.train_for_multiclass()
     elif params.downstream_dataset == 'CHB-MIT':
+        if params.use_fft:
+            raise ValueError('CBraMod seizure detection requires --no-use_fft')
+        if params.datasets_dir is None:
+            raise ValueError('--datasets_dir is required for presegmented CHB-MIT PKLs')
+        params.classifier = 'avgpooling_patch_reps'
         load_dataset = chb_dataset.LoadDataset(params)
         data_loader = load_dataset.get_data_loader()
         model = model_for_chb.Model(params)
         t = Trainer(params, data_loader, model)
-        t.train_for_binaryclass()
+        t.train_for_seizure_detection()
+    elif params.downstream_dataset == 'TUSZ':
+        if params.use_fft:
+            raise ValueError('CBraMod seizure detection requires --no-use_fft')
+        if params.raw_data_dir is None:
+            raise ValueError('--raw_data_dir is required for continuous TUSZ EDFs')
+        params.classifier = 'avgpooling_patch_reps'
+        load_dataset = tusz_dataset.LoadDataset(params)
+        data_loader = load_dataset.get_data_loader()
+        model = model_for_chb.Model(params)
+        t = Trainer(params, data_loader, model)
+        t.train_for_seizure_detection()
     elif params.downstream_dataset == 'BCIC2020-3':
         load_dataset = speech_dataset.LoadDataset(params)
         data_loader = load_dataset.get_data_loader()
