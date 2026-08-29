@@ -43,7 +43,10 @@ def main():
                         default=None,
                         help='datasets_dir')
     parser.add_argument('--raw_data_dir', type=str, default=None,
-                        help='continuous raw TUSZ root; not used for CHB-MIT PKLs')
+                        help='raw TUSZ root used by preprocessing scripts')
+    parser.add_argument('--input_dir', type=str, default=None,
+                        help='resampled TUSZ HDF5 root')
+    parser.add_argument('--marker_dir', type=str, default='./data/file_markers_detection')
     parser.add_argument('--max_seq_len', type=int, default=10)
     parser.add_argument('--time_step_size', type=int, default=1)
     parser.add_argument('--use_fft', action=argparse.BooleanOptionalAction, default=False,
@@ -119,8 +122,8 @@ def main():
     elif params.downstream_dataset == 'TUSZ':
         if params.use_fft:
             raise ValueError('CBraMod seizure detection requires --no-use_fft')
-        if params.raw_data_dir is None:
-            raise ValueError('--raw_data_dir is required for continuous TUSZ EDFs')
+        if params.input_dir is None:
+            raise ValueError('--input_dir is required for resampled TUSZ HDF5 files')
         params.classifier = 'avgpooling_patch_reps'
         load_dataset = tusz_dataset.LoadDataset(params)
         data_loader = load_dataset.get_data_loader()

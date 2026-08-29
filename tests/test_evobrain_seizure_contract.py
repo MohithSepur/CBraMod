@@ -13,6 +13,8 @@ from models.cbramod import CBraMod
 from models.model_for_chb import Model, SeizureModelOutput
 from datasets.chb_dataset import CustomDataset, pin_memory_enabled
 from datasets.tusz_dataset import TUSZDataset
+from generate_markers import generate_markers_tusz
+from resample_signals import TUSZ_CHANNELS, process_single_file
 from seizure_detection import (
     configure_device,
     configure_amp,
@@ -69,6 +71,23 @@ class _StaticModel(torch.nn.Module):
         x, y, seq_len, supports, adj_mat, names = batch
         logits = torch.where(y.reshape(-1) > 0, torch.tensor(2.0), torch.tensor(-2.0)).to(x)
         return SeizureModelOutput(logits, y, seq_len, supports, adj_mat, tuple(names))
+
+
+class _FakeEDF:
+    def __init__(self):
+        self.closed = False
+
+    def getSignalLabels(self):
+        return [f"{name}-REF" for name in TUSZ_CHANNELS]
+
+    def getSampleFrequency(self, _):
+        return 250
+
+    def readSignal(self, index):
+        return np.arange(6250, dtype=np.float32) + index
+
+    def close(self):
+        self.closed = True
 
 
 class EvoBrainContractTest(unittest.TestCase):
@@ -161,15 +180,28 @@ class EvoBrainContractTest(unittest.TestCase):
 
     def test_tusz_index_uses_non_overlapping_strict_overlap_windows(self):
         with tempfile.TemporaryDirectory() as directory:
-            raw_dir = Path(directory) / "dev"
-            raw_dir.mkdir()
-            (raw_dir / "record.edf").touch()
-            (raw_dir / "record.tse").write_text(
-                "0 5 bckg\n5 8 fnsz\n8 25 bckg\n",
-                encoding="utf-8",
+            root = Path(directory)
+            raw_root = root / "raw"
+            marker_dir = root / "markers"
+            input_dir = root / "resampled"
+            for split in ("train", "dev", "test"):
+                split_dir = raw_root / split
+                split_dir.mkdir(parents=True)
+                (split_dir / "record.edf").touch()
+                (split_dir / "record.tse").write_text(
+                    "0 5 bckg\n5 8 fnsz\n8 25 bckg\n", encoding="utf-8"
+                )
+            generated = generate_markers_tusz(raw_root, marker_dir, clip_len=10)
+            self.assertEqual(generated["dev"], {"seizure": 1, "nonseizure": 1})
+            process_single_file(
+                raw_root / "dev" / "record.edf",
+                raw_root,
+                input_dir,
+                reader_factory=lambda _: _FakeEDF(),
             )
             dataset = TUSZDataset(
-                raw_data_dir=directory,
+                input_dir=input_dir,
+                marker_dir=marker_dir,
                 split="dev",
                 standardize=False,
                 use_fft=False,
@@ -177,6 +209,12 @@ class EvoBrainContractTest(unittest.TestCase):
             self.assertEqual(len(dataset), 2)
             indexed = sorted((clip_index, label) for _, clip_index, label, _ in dataset.entries)
             self.assertEqual(indexed, [(0, 1), (1, 0)])
+            x, y, seq_len, supports, adjacency, name = dataset[0]
+            self.assertEqual(x.shape, (10, 19, 200))
+            self.assertEqual(seq_len.tolist(), [10])
+            self.assertEqual(supports.shape, (10, 2, 19, 19))
+            self.assertEqual(adjacency.shape, (10, 19, 19))
+            self.assertTrue(name.startswith("record.edf_"))
 
     def test_traceable_dev_threshold_is_reused_for_test(self):
         loader = DataLoader(_StaticDataset(), batch_size=2, shuffle=False)
