@@ -10,6 +10,11 @@ import torch
 from scipy.signal import resample_poly
 from torch.utils.data import DataLoader, Dataset
 
+
+def pin_memory_enabled():
+    """Pin host batches only when the automatic runtime can use CUDA."""
+    return torch.cuda.is_available()
+
 from .evobrain_contract import (
     FREQUENCY,
     TIME_STEP_SECONDS,
@@ -158,6 +163,6 @@ class LoadDataset:
                 batch_size=self.params.batch_size,
                 shuffle=split == "train",
                 num_workers=self.params.num_workers,
-                pin_memory=torch.cuda.is_available(),
+                pin_memory=pin_memory_enabled(),
             )
         return loaders

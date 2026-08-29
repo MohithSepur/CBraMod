@@ -6,9 +6,10 @@ from tqdm import tqdm
 
 
 class Evaluator:
-    def __init__(self, params, data_loader):
+    def __init__(self, params, data_loader, device):
         self.params = params
         self.data_loader = data_loader
+        self.device = device
 
     def get_metrics_for_multiclass(self, model):
         model.eval()
@@ -16,8 +17,8 @@ class Evaluator:
         truths = []
         preds = []
         for x, y in tqdm(self.data_loader, mininterval=1):
-            x = x.cuda()
-            y = y.cuda()
+            x = x.to(self.device)
+            y = y.to(self.device)
 
             pred = model(x)
             pred_y = torch.max(pred, dim=-1)[1]
@@ -40,8 +41,8 @@ class Evaluator:
         preds = []
         scores = []
         for x, y in tqdm(self.data_loader, mininterval=1):
-            x = x.cuda()
-            y = y.cuda()
+            x = x.to(self.device)
+            y = y.to(self.device)
             pred = model(x)
             score_y = torch.sigmoid(pred)
             pred_y = torch.gt(score_y, 0.5).long()
@@ -65,8 +66,8 @@ class Evaluator:
         truths = []
         preds = []
         for x, y in tqdm(self.data_loader, mininterval=1):
-            x = x.cuda()
-            y = y.cuda()
+            x = x.to(self.device)
+            y = y.to(self.device)
             pred = model(x)
             truths += y.cpu().squeeze().numpy().tolist()
             preds += pred.cpu().squeeze().numpy().tolist()

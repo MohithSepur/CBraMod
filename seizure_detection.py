@@ -20,6 +20,27 @@ from sklearn.metrics import (
 )
 
 
+def resolve_device(cuda_index=0):
+    """Choose the runtime device once without initializing a CUDA context."""
+    if torch.cuda.is_available():
+        return torch.device(f"cuda:{cuda_index}")
+    return torch.device("cpu")
+
+
+def configure_device(cuda_index=0):
+    """Select the CUDA index when present and return the resolved device."""
+    device = resolve_device(cuda_index)
+    if device.type == "cuda":
+        torch.cuda.set_device(cuda_index)
+    return device
+
+
+def configure_amp(device, requested=False):
+    """Build AMP state from the resolved device; construction launches no kernel."""
+    enabled = bool(requested and device.type == "cuda")
+    return enabled, torch.amp.GradScaler(device.type, enabled=enabled)
+
+
 def smoothed_pos_weight(raw_pos_weight: float) -> float:
     """Mirror EvoBrain/main.py:283-288 without replacing data statistics."""
     return float(min(sqrt(raw_pos_weight) if raw_pos_weight > 1.0 else raw_pos_weight, 20.0))
@@ -65,8 +86,7 @@ def train_one_batch(
     """Run one guarded optimizer step; return `(loss, stepped, filenames)`."""
     optimizer.zero_grad()
     moved = move_contract_batch(batch, device)
-    autocast_device = "cuda" if device.type == "cuda" else "cpu"
-    with torch.amp.autocast(autocast_device, enabled=use_amp):
+    with torch.amp.autocast(device.type, enabled=use_amp):
         output = model.forward_contract(moved)
         target = output.y.reshape(-1).float()
         loss = criterion(output.logits.float(), target)

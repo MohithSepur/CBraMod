@@ -8,7 +8,13 @@ from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss, MSELoss
 from tqdm import tqdm
 
 from finetune_evaluator import Evaluator
-from seizure_detection import evaluate_and_save, train_one_batch, training_criterion
+from seizure_detection import (
+    configure_amp,
+    evaluate_and_save,
+    resolve_device,
+    train_one_batch,
+    training_criterion,
+)
 
 
 class Trainer(object):
@@ -16,12 +22,9 @@ class Trainer(object):
         self.params = params
         self.data_loader = data_loader
 
-        self.val_eval = Evaluator(params, self.data_loader['val'])
-        self.test_eval = Evaluator(params, self.data_loader['test'])
-
-        self.device = torch.device(
-            f"cuda:{self.params.cuda}" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = resolve_device(self.params.cuda)
+        self.val_eval = Evaluator(params, self.data_loader['val'], self.device)
+        self.test_eval = Evaluator(params, self.data_loader['test'], self.device)
         self.model = model.to(self.device)
         if self.params.downstream_dataset in ['FACED', 'SEED-V', 'PhysioNet-MI', 'ISRUC', 'BCIC2020-3', 'TUEV', 'BCIC-IV-2a']:
             self.criterion = CrossEntropyLoss(label_smoothing=self.params.label_smoothing).to(self.device)
@@ -73,8 +76,9 @@ class Trainer(object):
     def train_for_seizure_detection(self):
         """Train/evaluate a six-field TUSZ or CHB-MIT-PKL seizure loader."""
         criterion = training_criterion(self.data_loader['train'].dataset, self.device)
-        use_amp = bool(getattr(self.params, 'amp', False) and self.device.type == 'cuda')
-        scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+        use_amp, scaler = configure_amp(
+            self.device, requested=getattr(self.params, 'amp', False)
+        )
         best_f1 = float('-inf')
         best_state = None
 
@@ -152,8 +156,8 @@ class Trainer(object):
             losses = []
             for x, y in tqdm(self.data_loader['train'], mininterval=10):
                 self.optimizer.zero_grad()
-                x = x.cuda()
-                y = y.cuda()
+                x = x.to(self.device)
+                y = y.to(self.device)
                 pred = self.model(x)
                 if self.params.downstream_dataset == 'ISRUC':
                     loss = self.criterion(pred.transpose(1, 2), y)
@@ -227,8 +231,8 @@ class Trainer(object):
             losses = []
             for x, y in tqdm(self.data_loader['train'], mininterval=10):
                 self.optimizer.zero_grad()
-                x = x.cuda()
-                y = y.cuda()
+                x = x.to(self.device)
+                y = y.to(self.device)
                 pred = self.model(x)
 
                 loss = self.criterion(pred, y)
@@ -299,8 +303,8 @@ class Trainer(object):
             losses = []
             for x, y in tqdm(self.data_loader['train'], mininterval=10):
                 self.optimizer.zero_grad()
-                x = x.cuda()
-                y = y.cuda()
+                x = x.to(self.device)
+                y = y.to(self.device)
                 pred = self.model(x)
                 loss = self.criterion(pred, y)
 

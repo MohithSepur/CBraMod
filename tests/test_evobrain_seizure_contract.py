@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 import pickle
@@ -10,10 +11,13 @@ from torch.utils.data import DataLoader, Dataset
 
 from models.cbramod import CBraMod
 from models.model_for_chb import Model, SeizureModelOutput
-from datasets.chb_dataset import CustomDataset
+from datasets.chb_dataset import CustomDataset, pin_memory_enabled
 from datasets.tusz_dataset import TUSZDataset
 from seizure_detection import (
+    configure_device,
+    configure_amp,
     evaluate_and_save,
+    resolve_device,
     smoothed_pos_weight,
     train_one_batch,
     training_criterion,
@@ -68,6 +72,22 @@ class _StaticModel(torch.nn.Module):
 
 
 class EvoBrainContractTest(unittest.TestCase):
+    def test_cuda_available_device_and_amp_configuration_branch(self):
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.set_device") as set_device,
+        ):
+            device = resolve_device(cuda_index=2)
+            use_amp, scaler = configure_amp(device, requested=True)
+            self.assertEqual(device, torch.device("cuda:2"))
+            self.assertTrue(use_amp)
+            self.assertTrue(scaler.is_enabled())
+            self.assertTrue(pin_memory_enabled())
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                pass
+            self.assertEqual(configure_device(2), device)
+            set_device.assert_called_once_with(2)
+
     def _model(self):
         params = SimpleNamespace(
             use_pretrained_weights=False,
